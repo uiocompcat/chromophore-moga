@@ -5,11 +5,11 @@ import pickle
 import functools
 import subprocess
 from contextlib import contextmanager
-
+import shutil
 import numpy as np
 import pandas as pd
 from scipy.sparse.csgraph import connected_components
-
+import glob
 from gaussian_runner.gaussian_runner import GaussianRunner
 
 
@@ -410,9 +410,57 @@ def zero_mask_target_by_population_median(individual, individuals, target_indice
             target_population.append(_._fitness[target_idx])
         
         if individual._fitness[target_idx] < scaling[target_idx] * np.median(target_population):
-            return [0, 0]
+            return [0, 0, 0]
 
     return individual._fitness
+
+def linear_mask_target_by_population_median(individual, individuals, target_indices, scaling):
+
+    """
+    Masks an individuals fitness by applying an exponential decay.
+
+    Arguments:
+        individual (Individual): The current individual.
+        individuals (list[Individual]: The list of individuals.
+        target_indices (list[int]): The target indices to be masked.
+        scaling: (list[float]): The scalings to apply to each of the target indices.
+
+    Returns:
+        list: The masked fitness.
+    """
+
+    lowest_ratio = 1.0
+    for target_idx in target_indices:
+
+        target_population = []
+        for _ in individuals:
+            target_population.append(_._fitness[target_idx])
+
+        masking_threshold = scaling[target_idx] * np.median(target_population)
+        if individual._fitness[target_idx] < masking_threshold:
+            if individual._fitness[target_idx] / masking_threshold < lowest_ratio:
+                lowest_ratio = individual._fitness[target_idx] / masking_threshold
+    
+    return [_ * lowest_ratio for _ in individual._fitness]
+
+
+def get_initial_individuals_to_restart_run(directory):
+    initial_individuals = []
+
+    file_path = os.path.join(directory, 'log_partial_part1.pickle')
+    with open(file_path, 'rb') as rf:
+        data = pickle.load(rf)
+    last_history_entry = data['history'][-1]
+    for i, individual in enumerate(last_history_entry['individuals']):  
+        genome = individual['genome']   
+        initial_individuals.append(Individual(genome=genome, meta={
+                 'metal_centre': 'Ru',
+                 'oxidation_state': 2,
+                 'coordination_geometry': 'oct',
+                 'id': 'gen0/ind' + str(i)
+                  }))
+
+    return initial_individuals
 
 def parse_xyz(xyz: str):
 
@@ -447,11 +495,11 @@ def get_metal_connecting_indices(xyz: str, radius_cutoff: float):
         list[int]: The list of indices connecting to metal.
     """
 
-    atoms, positions = parse_xyz(xyz)
-
+    atom_identifiers, positions = parse_xyz(xyz) 
     metal_indices = []
-    for i, atom in enumerate(atoms):
-        if (element_identifiers.index(atom) + 1) in transition_metal_atomic_numbers:
+    for i, atom in enumerate(atom_identifiers):
+        atom_atomic_number = element_identifiers.index(atom) + 1
+        if atom_atomic_number in transition_metal_atomic_numbers:
             metal_indices.append(i)
 
     connecting_indices = []
@@ -579,6 +627,13 @@ def fitness_function(individual):
     # make unique run directory
     tmp_dir = 'fitness_calculations/' + individual.meta['id']
     os.makedirs(tmp_dir)
+    new_run_opt_file_path = os.path.join(tmp_dir, 'run_opt.sh')
+    new_run_tddft_file_path = os.path.join(tmp_dir, 'run_tddft.sh')
+
+    shutil.copy('./gaussian_runner/templates/run.sh',new_run_opt_file_path)
+    shutil.copy('./gaussian_runner/templates/run.sh',new_run_tddft_file_path)
+    shutil.copy('./gaussian_runner/templates/individual_opt.com',tmp_dir)
+    shutil.copy('./gaussian_runner/templates/individual_tddft.com',tmp_dir)
 
     with change_directory(tmp_dir):
 
@@ -588,8 +643,8 @@ def fitness_function(individual):
 
         # assemble molsimplify ligand names with the correct flipping
         molsimplify_ligand_names = []
-        for gene in individual[genome]:
-            if gene[is_flipped]:
+        for gene in individual.genome:
+            if gene['is_flipped']:
                 molsimplify_ligand_names.append(gene['id'] + '_flipped')
             else:
                 molsimplify_ligand_names.append(gene['id'])
@@ -605,84 +660,101 @@ def fitness_function(individual):
                       '-oxstate ' + str(individual.meta['oxidation_state'])
                       ]
 
+
         # run molsimplify
         result = subprocess.run(['molsimplify', *parameters], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-        #####################################
-        ########### TO BE REMOVED ###########
-        #####################################
-
-        # read the xyz from molsimplify output
-        with open('./Runs/run/run/run.xyz') as fh:
-            xyz = fh.read()
-            individual.meta['initial_xyz'] = xyz
-
-        fitness_vector = [np.random.rand(), np.random.rand(), np.random.rand()]
-        individual.set_fitness(fitness_vector)
-        return individual
-
-        #####################################
-        ########### TO BE REMOVED ###########
-        #####################################
-
+            
         try:
             # read the xyz from molsimplify output
             with open('./Runs/run/run/run.xyz') as fh:
                 xyz = fh.read()
                 individual.meta['initial_xyz'] = xyz
-
-            gaussian_runner = GaussianRunner(output_format='dict')
-
-            gaussian_result_dict = gaussian_runner.run_gaussian(xyz)
-            individual.meta['optimised_xyz'] = gaussian_result_dict['optimised_xyz']
-
-            sum_logp = calculate_sum_logP(individual)
-            dipole_moment = result['dipole_moment']
-            solubility = calculate_solubility(dipole_moment, sum_logp)
-
+           
         except FileNotFoundError:
             print('molSimplify failure. Genome: ' + ','.join([gene['id'] for gene in individual.genome]))
-            individual.set_fitness([0, 0])
+            individual.set_fitness([0, 0, 0])
+            # write individual to file
+            with open('individual_final.txt', 'w') as fh:
+                fh.write(str(individual.as_dict()))
+            return individual
+        try:
+            gaussian_runner = GaussianRunner(output_format='dict')
+            
+            gaussian_result_dict = gaussian_runner.run_gaussian(xyz)
+            
+            individual.meta['optimised_xyz'] = gaussian_result_dict['optimised_xyz']
+
+            print('about to calcualate sum logp')
+            sum_logp = calculate_sum_logP(individual)
+            print('sum log p is ', sum_logp)
+            dipole_moment = gaussian_result_dict['dipole_moment']
+            solubility = calculate_solubility(dipole_moment, sum_logp)
+            
+        except FileNotFoundError:
+            print('Gaussian FileNotFound failure. Genome: ' + ','.join([gene['id'] for gene in individual.genome]))
+            individual.set_fitness([0, 0, 0])
+            with open('individual_final.txt', 'w') as fh:
+                fh.write(str(individual.as_dict()))
             return individual
 
         except RuntimeError:
             print('Gaussian failure. Genome: ' + ','.join([gene['id'] for gene in individual.genome]))
-            individual.set_fitness([0, 0])
+            individual.set_fitness([0, 0, 0])
+            with open('individual_final.txt', 'w') as fh:
+                fh.write(str(individual.as_dict()))
             return individual
 
+        except ValueError:
+            print('step with minimum Maximum Force in invidual_opt.out could not be found, bad initial geometry')
+            individual.set_fitness([0, 0, 0])
+            with open('individual_final.txt', 'w') as fh:
+                fh.write(str(individual.as_dict()))
+            return individual
         except Exception:
             print('Other error')
             print(xyz)
-            individual.set_fitness([0, 0])
+            individual.set_fitness([0, 0, 0])
+            with open('individual_final.txt', 'w') as fh:
+                fh.write(str(individual.as_dict()))
             return individual
 
-    # check that connecting atoms are the same between initial and optimised xyz
-    initial_connecting_indices = get_metal_connecting_indices(individual.meta['initial_xyz'], 2.5)
-    optimised_connecting_indices = get_metal_connecting_indices(individual.meta['optimised_xyz'], 2.5)
-    if initial_connecting_indices != optimised_connecting_indices:
-        print('Connecting indices different')
-        individual.set_fitness([0, 0])
+        # check that connecting atoms are the same between initial and optimised xyz
+        """
+        initial_connecting_indices = get_metal_connecting_indices(individual.meta['initial_xyz'], 2.5)
+        try:
+            optimised_connecting_indices = get_metal_connecting_indices(individual.meta['optimised_xyz'], 2.5)
+            if initial_connecting_indices != optimised_connecting_indices:
+                print('Connecting indices different')
+                individual.set_fitness([0, 0, 0])
+                return individual
+        except KeyError:
+        print('Key error in individual.meta[optimised_xyz]')
+        individual.set_fitness([0, 0, 0])
         return individual
+         """
+        # check for disconnected graphs
+        is_connected = radius_graph_is_connected(parse_xyz(individual.meta['optimised_xyz'])[1], 3.0)
+        if not is_connected:
+            print('Graph not connected')
+            individual.set_fitness([0, 0, 0])
+            with open('individual_final.txt', 'w') as fh:
+                fh.write(str(individual.as_dict()))
+            return individual
 
-    # check for disconnected graphs
-    is_connected = radius_graph_is_connected(parse_xyz(individual.meta['optimised_xyz'])[1], 3.0)
-    if not is_connected:
-        print('Graph not connected')
-        individual.set_fitness([0, 0])
+        # update fitness and return
+        fitness_vector = [
+                 solubility,
+                 gaussian_result_dict['n*deltaL'],
+                 gaussian_result_dict['f_max']
+                 ]
+        individual.set_fitness(fitness_vector)
+
+        with open('individual_final.txt', 'w') as fh:
+            fh.write(str(individual.as_dict()))
         return individual
-
-    # update fitness and return
-    fitness_vector = [
-        solubility,
-        gaussian_result_dict['n*deltaL'],
-        gaussian_result_dict['f_max']
-    ]
-    individual.set_fitness(fitness_vector)
-
-    return individual
 
 def parse_config_file(file_path: str):
-
+    
     """Parses a config file and returns a dictionary with all relevant parameters.
 
     Returns:
@@ -691,10 +763,9 @@ def parse_config_file(file_path: str):
 
     with open(file_path, 'r') as fh:
         config = yaml.safe_load(fh)
-
-    #TODO to be moved to config file
-    config['ligand_library'] = pd.read_csv('tmQMg-L_selection.csv').to_dict('records')
-
+    
+    config['ligand_library'] = pd.read_csv('ligands/tmQMg-L_selection.csv').to_dict('records')
+    
     # add is_flipped flag
     for _ in config['ligand_library']:
         _['is_flipped'] = False
@@ -778,7 +849,7 @@ def get_existing_ligand_names():
             stderr=subprocess.PIPE,
         ).stdout
     )
-
+    print('EXISTING RESULT', [_.strip() for _ in out.replace("}", "").split("\\n")[8:-1]])
     return [_.strip() for _ in out.replace("}", "").split("\\n")[8:-1]]
 
 if __name__ == "__main__":
@@ -815,10 +886,11 @@ if __name__ == "__main__":
             n_allowed_duplicates=config['n_allowed_duplicates'],
             solution_constraints=[functools.partial(is_singlet)],
             genome_equivalence_function=are_rotation_equivalents,
-            masking_function=functools.partial(zero_mask_target_by_population_median, target_indices=[i for i in range(len(config['zeromask_scaling_factors']))], scaling=config['zeromask_scaling_factors'])
+            masking_function=functools.partial(linear_mask_target_by_population_median, target_indices=[i for i in range(len(config['scaling_factors']))], scaling=config['scaling_factors'])
     )
 
     # random initial population
+    """
     initial_individuals = []
     for i in range(config['n_population']):
         genome = np.random.choice(config['ligand_library'], size=3).tolist()
@@ -828,6 +900,11 @@ if __name__ == "__main__":
             'coordination_geometry': 'oct',
             'id': 'gen0/ind' + str(i)
         }))
+    """
+    #If restarting run:
+    initial_individuals = get_initial_individuals_to_restart_run('./')  #reads from log_partial_part1
+
+    
     initial_population = Population(initial_individuals)
     
     # run ga

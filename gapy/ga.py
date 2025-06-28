@@ -1,6 +1,6 @@
 import copy
 import numpy as np
-
+import pickle
 from .population import Population
 
 
@@ -85,6 +85,9 @@ class GA:
             log['history'].append(population.as_dict())
             log['explored_individuals'].extend([_.as_dict() for _ in offspring.individuals])
             
+            with open('log_partial.pickle', 'wb') as log_file:
+                pickle.dump(log, log_file)
+ 
             print('Generation ' + str(generation) + ' | Average fitness: ' + str(np.round(np.mean([individual.fitness for individual in population.individuals], axis=0), decimals=3)))
 
         return population, log
