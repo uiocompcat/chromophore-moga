@@ -1,5 +1,0 @@
-# molSimplify input file generated from CLI input
--ligadd temp_mol.xyz
--ligname HEBQIR-subgraph-1
--ligcon 5,10
--skipANN True
