@@ -1,6 +1,6 @@
 %mem=25GB
 %chk=<path_chk>.chk
-#p b3lyp/gen pseudo=read empiricaldispersion=gd3bj td(nstates=30) scrf=(smd,solvent=water) <geom> guess=read
+#p pbe1pbe/gen pseudo=read empiricaldispersion=gd3bj td(nstates=30) scrf=(smd,solvent=water) <geom> guess=read
 
 Ru     0
 S    1   1.00

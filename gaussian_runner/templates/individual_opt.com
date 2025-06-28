@@ -1,6 +1,6 @@
 %mem=25GB
 %chk=<com_name>.chk
-#p bp86/gen pseudo=read empiricaldispersion=gd3bj opt
+#p pbepbe/gen pseudo=read empiricaldispersion=gd3bj opt
 
 Chromophore PL-MOGA/JT-VAE project
 
