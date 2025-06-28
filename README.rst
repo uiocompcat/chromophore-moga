@@ -20,7 +20,7 @@ The code can be obtained by running::
 
 which copies the full project into your current working directory.
 
-First, make sure to add all ligands to the ``molSimplify``ligand libraries using the ``add_ligands_to_molsimplify.py`` script:
+First, make sure to add all ligands to the ``molSimplify`` ligand library using the ``add_ligands_to_molsimplify.py`` script:
 
     $ python add_ligands_to_molsimplify.py JT-VAE_selection.xyz
     $ python add_ligands_to_molsimplify.py tmQMg-L_selection.xyz
